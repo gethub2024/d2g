@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "dotenv": "^16.4.7",
+    "googleapis": "^134.0.0",
+    "moment-timezone": "^0.5.46"
+  },
+  "name": "discord-to-google-sheet",
+  "version": "2.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --no-deprecation index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}

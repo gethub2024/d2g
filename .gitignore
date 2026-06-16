@@ -1,0 +1,6 @@
+.env
+file.json
+node_modules/
+.npm/
+package.zip
+*.zip

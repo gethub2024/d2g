@@ -1,0 +1,505 @@
+import 'dotenv/config';
+import { google } from 'googleapis';
+import { Client, GatewayIntentBits, Partials, EmbedBuilder } from 'discord.js';
+import moment from 'moment-timezone';
+
+const CHANNELS = [
+  { id: process.env.CHANNEL_1_ID, sheet: 'DA' },
+  { id: process.env.CHANNEL_2_ID, sheet: 'DT' },
+  { id: process.env.CHANNEL_3_ID, sheet: 'GR' },
+];
+
+const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
+const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
+const MAX_RUN_MS = 7 * 60 * 1000;
+const FLUSH_INTERVAL_MS = 30 * 1000;
+const REACTION_DELAY_MS = 50;
+
+const required = ['BOT_TOKEN', 'SPREADSHEET_ID', 'CHANNEL_1_ID', 'CHANNEL_2_ID', 'CHANNEL_3_ID', 'ERROR_CHANNEL_ID'];
+for (const key of required) {
+  if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
+}
+
+const stats = { DA: { catchup: 0, realtime: 0 }, DT: { catchup: 0, realtime: 0 }, GR: { catchup: 0, realtime: 0 }, errors: 0 };
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+});
+
+const auth = new google.auth.GoogleAuth({
+  keyFile: 'file.json',
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+});
+const authClient = await auth.getClient();
+const sheets = google.sheets({ version: 'v4', auth: authClient });
+
+function ss(range) {
+  return {
+    spreadsheetId: process.env.SPREADSHEET_ID,
+    range,
+  };
+}
+
+function getSheetByChannel(channelId) {
+  const ch = CHANNELS.find(c => c.id === channelId);
+  return ch ? ch.sheet : null;
+}
+
+function formatRow(msg) {
+  const ts = moment(msg.createdAt).tz('Asia/Kolkata');
+  return [
+    msg.author.username,
+    msg.content,
+    ts.format('DD/MM/YYYY'),
+    ts.format('hh:mm:ss A'),
+    msg.id,
+  ];
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+async function reactSequentially(messages) {
+  for (const msg of messages) {
+    try {
+      await msg.react('✅');
+      await sleep(REACTION_DELAY_MS);
+    } catch {
+      // skip if reaction fails
+    }
+  }
+}
+
+async function sendEmbed(channelId, embed) {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (channel) await channel.send({ embeds: [embed] });
+  } catch {
+    // cannot send to error channel, fallback to console
+  }
+}
+
+function buildErrorEmbed(sheetName, action, err) {
+  return new EmbedBuilder()
+    .setColor(0xE74C3C)
+    .setTitle(`⚠️ Error — ${action} ${sheetName}`)
+    .setDescription(err.message || 'Unknown error')
+    .setTimestamp();
+}
+
+async function sendError(sheetName, action, err) {
+  stats.errors++;
+  console.error(`[ERROR] ${action} ${sheetName}:`, err.message);
+  if (ERROR_CHANNEL_ID) {
+    await sendEmbed(ERROR_CHANNEL_ID, buildErrorEmbed(sheetName, action, err));
+  }
+}
+
+function buildSummaryEmbed() {
+  const total = { DA: 0, DT: 0, GR: 0 };
+  let totalAll = 0;
+  const lines = [];
+  for (const sheet of Object.keys(stats)) {
+    if (sheet === 'errors') continue;
+    const s = stats[sheet];
+    const t = s.catchup + s.realtime;
+    total[sheet] = t;
+    totalAll += t;
+    lines.push(`**${sheet}** ${s.catchup} caught up │ ${s.realtime} live │ **${t}** total`);
+  }
+
+  const hasErrors = stats.errors > 0;
+  const color = hasErrors ? 0xF1C40F : 0x2ECC71;
+
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle('📊 Daily Report — 8:28 - 8:35 AM')
+    .setDescription(lines.join('\n'))
+    .addFields({ name: '────────────────────────', value: `**Total:** ${totalAll} messages logged` })
+    .setTimestamp();
+
+  if (hasErrors) {
+    embed.setFooter({ text: `⚠️ ${stats.errors} error(s) occurred` });
+  } else {
+    embed.setFooter({ text: '✅ All operations successful' });
+  }
+
+  return embed;
+}
+
+async function sendSummary() {
+  if (!ERROR_CHANNEL_ID) return;
+  await sendEmbed(ERROR_CHANNEL_ID, buildSummaryEmbed());
+}
+
+const buffer = { DA: [], DT: [], GR: [] };
+let flushTimer = null;
+
+function pushToBuffer(sheetName, message) {
+  buffer[sheetName].push({ row: formatRow(message), message });
+}
+
+async function flushBuffer() {
+  for (const sheetName of Object.keys(buffer)) {
+    const snapshot = buffer[sheetName].splice(0);
+    if (snapshot.length === 0) continue;
+
+    const rows = snapshot.map(e => e.row);
+    try {
+      await sheets.spreadsheets.values.append({
+        ...ss(`${sheetName}!A:E`),
+        valueInputOption: 'RAW',
+        resource: { values: rows },
+      });
+      console.log(`[FLUSH] Appended ${rows.length} rows to ${sheetName}`);
+
+      const msgs = snapshot.map(e => e.message);
+      reactSequentially(msgs);
+    } catch (err) {
+      await sendError(sheetName, 'Flush', err);
+    }
+  }
+}
+
+async function ensureHeaders() {
+  for (const { sheet } of CHANNELS) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        ...ss(`${sheet}!A1:E1`),
+      });
+      const existing = res.data.values?.[0];
+      const needsUpdate = !existing || existing.join('|') !== HEADERS.join('|');
+      if (needsUpdate) {
+        await sheets.spreadsheets.values.update({
+          ...ss(`${sheet}!A1:E1`),
+          valueInputOption: 'RAW',
+          resource: { values: [HEADERS] },
+        });
+        console.log(`[HEADER] Added headers to ${sheet}`);
+      }
+    } catch (err) {
+      await sendError(sheet, 'Header check', err);
+    }
+  }
+}
+
+async function ensurePitHeader() {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      ...ss('PIT!A1:A1'),
+    });
+    if (!res.data.values?.[0]?.[0]) {
+      await sheets.spreadsheets.values.update({
+        ...ss('PIT!A1:A1'),
+        valueInputOption: 'RAW',
+        resource: { values: [['Username']] },
+      });
+      console.log('[HEADER] Added header to PIT');
+    }
+  } catch (err) {
+    await sendError('PIT', 'Header check', err);
+  }
+}
+
+async function catchUpMessages() {
+  console.log('[CATCHUP] Syncing last 100 messages...');
+
+  for (const { id, sheet } of CHANNELS) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        ...ss(`${sheet}!E:E`),
+      });
+      const existing = new Set();
+      const sheetRows = res.data.values;
+      if (sheetRows && sheetRows.length > 1) {
+        for (let i = 1; i < sheetRows.length; i++) {
+          const val = sheetRows[i][0];
+          if (val) existing.add(val);
+        }
+      }
+
+      const channel = await client.channels.fetch(id);
+      if (!channel) {
+        console.log(`[CATCHUP] ${sheet}: channel not found`);
+        continue;
+      }
+
+      const messages = await channel.messages.fetch({ limit: 100 });
+      if (messages.size === 0) {
+        console.log(`[CATCHUP] ${sheet}: 0 messages in history`);
+        continue;
+      }
+
+      const newMsgs = [...messages.values()]
+        .filter(msg => !msg.author.bot && !existing.has(msg.id))
+        .reverse();
+
+      if (newMsgs.length === 0) {
+        console.log(`[CATCHUP] ${sheet}: 0 new (all ${messages.size} already in sheet)`);
+        continue;
+      }
+
+      const rows = newMsgs.map(formatRow);
+      await sheets.spreadsheets.values.append({
+        ...ss(`${sheet}!A:E`),
+        valueInputOption: 'RAW',
+        resource: { values: rows },
+      });
+      stats[sheet].catchup += rows.length;
+      console.log(`[CATCHUP] ${sheet}: appended ${rows.length} new messages`);
+      reactSequentially(newMsgs);
+    } catch (err) {
+      await sendError(sheet, 'Catch-up', err);
+    }
+  }
+
+  console.log('[CATCHUP] Done');
+}
+
+async function checkRecentEdits() {
+  console.log('[EDITCHECK] Checking recent edits...');
+
+  for (const { id, sheet } of CHANNELS) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        ...ss(`${sheet}!A:E`),
+      });
+      const rows = res.data.values;
+      if (!rows || rows.length <= 1) continue;
+
+      const lookup = {};
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row[4]) lookup[row[4]] = { rowNum: i + 1, content: row[1] || '' };
+      }
+
+      const ids = Object.keys(lookup);
+      if (ids.length === 0) continue;
+
+      const channel = await client.channels.fetch(id);
+      if (!channel) continue;
+
+      const messages = await channel.messages.fetch({ limit: 50 });
+      if (messages.size === 0) continue;
+
+      let updated = 0;
+      for (const msg of messages.values()) {
+        if (msg.author.bot) continue;
+        const entry = lookup[msg.id];
+        if (!entry) continue;
+
+        const discordContent = msg.content || '';
+        if (discordContent !== entry.content) {
+          await sheets.spreadsheets.values.update({
+            ...ss(`${sheet}!B${entry.rowNum}`),
+            valueInputOption: 'RAW',
+            resource: { values: [[discordContent]] },
+          });
+          await msg.react('✏️').catch(() => {});
+          updated++;
+        }
+      }
+
+      if (updated > 0) console.log(`[EDITCHECK] ${sheet}: updated ${updated} edited messages`);
+    } catch (err) {
+      await sendError(sheet, 'Edit check', err);
+    }
+  }
+
+  console.log('[EDITCHECK] Done');
+}
+
+function generateSnowflake(timestampMs) {
+  const DISCORD_EPOCH = 1420070400000n;
+  return ((BigInt(timestampMs) - DISCORD_EPOCH) << 22n).toString();
+}
+
+function isOlderThan48h(messageId) {
+  const DISCORD_EPOCH = 1420070400000n;
+  const ts = (BigInt(messageId) >> 22n) + DISCORD_EPOCH;
+  const cutoff = BigInt(Date.now()) - 48n * 60n * 60n * 1000n;
+  return ts < cutoff;
+}
+
+async function checkDeletedMessages() {
+  console.log('[DELCHECK] Checking for deleted messages...');
+  const snowflake48hAgo = generateSnowflake(Date.now() - 48 * 60 * 60 * 1000);
+
+  for (const { id, sheet } of CHANNELS) {
+    try {
+      const channel = await client.channels.fetch(id);
+      if (!channel) continue;
+
+      const messages = await channel.messages.fetch({
+        after: snowflake48hAgo,
+        limit: 100,
+      });
+      if (messages.size === 0) {
+        console.log(`[DELCHECK] ${sheet}: 0 messages in 48h window, skipping`);
+        continue;
+      }
+      const existingIds = new Set(messages.keys());
+
+      const res = await sheets.spreadsheets.values.get({
+        ...ss(`${sheet}!A:E`),
+      });
+      const rows = res.data.values;
+      if (!rows || rows.length <= 1) continue;
+
+      let deleted = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const msgId = row[4];
+        if (!msgId) continue;
+        if (isOlderThan48h(msgId)) continue;
+
+        if (!existingIds.has(msgId)) {
+          await sheets.spreadsheets.values.clear({
+            ...ss(`${sheet}!A${i + 1}:E${i + 1}`),
+          });
+          deleted++;
+        }
+      }
+
+      if (deleted > 0) console.log(`[DELCHECK] ${sheet}: cleared ${deleted} deleted messages`);
+    } catch (err) {
+      await sendError(sheet, 'Delete check', err);
+    }
+  }
+
+  console.log('[DELCHECK] Done');
+}
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  const sheetName = getSheetByChannel(message.channelId);
+  if (!sheetName) return;
+  stats[sheetName].realtime++;
+  pushToBuffer(sheetName, message);
+});
+
+client.on('messageDelete', async (message) => {
+  const sheetName = getSheetByChannel(message.channelId);
+  if (!sheetName) return;
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      ...ss(`${sheetName}!A:E`),
+    });
+    const rows = res.data.values;
+    if (!rows || rows.length === 0) return;
+
+    const idx = rows.findIndex(r => r[4] === message.id);
+    if (idx !== -1) {
+      await sheets.spreadsheets.values.clear({
+        ...ss(`${sheetName}!A${idx + 1}:E${idx + 1}`),
+      });
+      console.log(`[DELETE] Cleared ${message.id} from ${sheetName}`);
+    }
+  } catch (err) {
+    await sendError(sheetName, 'Delete', err);
+  }
+});
+
+client.on('messageUpdate', async (oldMessage, newMessage) => {
+  if (newMessage.partial) await newMessage.fetch();
+
+  const sheetName = getSheetByChannel(newMessage.channelId);
+  if (!sheetName) return;
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      ...ss(`${sheetName}!A:E`),
+    });
+    const rows = res.data.values;
+    if (!rows || rows.length === 0) return;
+
+    const idx = rows.findIndex(r => r[4] === newMessage.id);
+    if (idx !== -1) {
+      await sheets.spreadsheets.values.update({
+        ...ss(`${sheetName}!B${idx + 1}`),
+        valueInputOption: 'RAW',
+        resource: { values: [[newMessage.content]] },
+      });
+      console.log(`[UPDATE] Updated ${newMessage.id} in ${sheetName}`);
+      await newMessage.react('✏️').catch(() => {});
+    }
+  } catch (err) {
+    await sendError(sheetName, 'Update', err);
+  }
+});
+
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  const roleId = '1120709236918337596';
+  const hadRole = oldMember.roles.cache.has(roleId);
+  const hasRole = newMember.roles.cache.has(roleId);
+
+  if (hadRole !== hasRole) {
+    await updateTraineeRoleColumn();
+  }
+});
+
+async function updateTraineeRoleColumn() {
+  const guild = client.guilds.cache.first();
+  if (!guild) return;
+  await guild.members.fetch();
+  const role = guild.roles.cache.get('1120709236918337596');
+  if (!role) return;
+  const names = role.members.map(m => m.user.username);
+
+  try {
+    await sheets.spreadsheets.values.clear({
+      ...ss('PIT!A2:A'),
+    });
+    await sheets.spreadsheets.values.update({
+      ...ss('PIT!A2:A'),
+      valueInputOption: 'RAW',
+      resource: { values: names.map(n => [n]) },
+    });
+    console.log('[PIT] Updated trainee list');
+  } catch (err) {
+    await sendError('PIT', 'Trainee update', err);
+  }
+}
+
+client.once('clientReady', async () => {
+  console.log('Bot is online!');
+
+  await ensureHeaders();
+  await ensurePitHeader();
+  await catchUpMessages();
+  await checkRecentEdits();
+  await checkDeletedMessages();
+  await updateTraineeRoleColumn();
+
+  flushTimer = setInterval(flushBuffer, FLUSH_INTERVAL_MS);
+
+  setTimeout(async () => {
+    console.log('[SHUTDOWN] Time limit. Flushing buffer...');
+    clearInterval(flushTimer);
+    await flushBuffer();
+    await sendSummary();
+    console.log('[SHUTDOWN] Goodbye!');
+    client.destroy();
+    process.exit(0);
+  }, MAX_RUN_MS);
+});
+
+process.on('SIGINT', async () => {
+  console.log('[SHUTDOWN] Interrupt. Flushing buffer...');
+  clearInterval(flushTimer);
+  await flushBuffer();
+  await sendSummary();
+  client.destroy();
+  process.exit(0);
+});
+
+client.login(process.env.BOT_TOKEN);

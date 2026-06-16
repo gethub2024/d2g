@@ -1,0 +1,38 @@
+name: Daily Discord Bot
+
+on:
+  # ─────────────────────────────────────────────────────────
+  # Change time (IST):
+  #   8:28 AM IST  →  "58 2 * * *"   (2:58 UTC)
+  #   9:00 AM IST  →  "30 3 * * *"   (3:30 UTC)
+  #  10:00 AM IST  →  "30 4 * * *"   (4:30 UTC)
+  # Formula: UTC hour = IST hour - 5, UTC min = IST min - 30
+  # ─────────────────────────────────────────────────────────
+  schedule:
+    - cron: '58 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      - run: npm ci
+      - name: Create .env
+        run: |
+          echo "BOT_TOKEN=${{ secrets.BOT_TOKEN }}" >> .env
+          echo "CHANNEL_1_ID=${{ secrets.CHANNEL_1_ID }}" >> .env
+          echo "CHANNEL_2_ID=${{ secrets.CHANNEL_2_ID }}" >> .env
+          echo "CHANNEL_3_ID=${{ secrets.CHANNEL_3_ID }}" >> .env
+          echo "SPREADSHEET_ID=${{ secrets.SPREADSHEET_ID }}" >> .env
+          echo "ERROR_CHANNEL_ID=${{ secrets.ERROR_CHANNEL_ID }}" >> .env
+      - name: Create file.json
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: echo "$GOOGLE_CREDENTIALS" > file.json
+      - run: npm start
