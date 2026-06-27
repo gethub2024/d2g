@@ -373,6 +373,7 @@ async function checkDeletedMessages() {
         const row = rows[i];
         const msgId = row[4];
         if (!msgId) continue;
+        if (!/^\d{17,20}$/.test(msgId)) continue;
         if (isOlderThan48h(msgId)) continue;
 
         if (!existingIds.has(msgId)) {
