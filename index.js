@@ -205,18 +205,32 @@ async function ensureHeaders() {
 
 async function ensurePitHeader() {
   try {
-    const res = await sheets.spreadsheets.values.get({
+    const resA = await sheets.spreadsheets.values.get({
       ...ss('PIT!A1:B1'),
     });
-    const existing = res.data.values?.[0];
-    const expected = ['Username', 'User ID'];
-    if (!existing || existing.join('|') !== expected.join('|')) {
+    const existingA = resA.data.values?.[0];
+    const expectedA = ['Username', 'User ID'];
+    if (!existingA || existingA.join('|') !== expectedA.join('|')) {
       await sheets.spreadsheets.values.update({
         ...ss('PIT!A1:B1'),
         valueInputOption: 'RAW',
-        resource: { values: [expected] },
+        resource: { values: [expectedA] },
       });
-      console.log('[HEADER] Added headers to PIT');
+      console.log('[HEADER] Added A:B headers to PIT');
+    }
+
+    const resD = await sheets.spreadsheets.values.get({
+      ...ss('PIT!D1:E1'),
+    });
+    const existingD = resD.data.values?.[0];
+    const expectedD = ['Display Name', 'Profile Pic'];
+    if (!existingD || existingD.join('|') !== expectedD.join('|')) {
+      await sheets.spreadsheets.values.update({
+        ...ss('PIT!D1:E1'),
+        valueInputOption: 'RAW',
+        resource: { values: [expectedD] },
+      });
+      console.log('[HEADER] Added D:E headers to PIT');
     }
   } catch (err) {
     await sendError('PIT', 'Header check', err);
@@ -468,18 +482,45 @@ async function updateTraineeRoleColumn() {
   await guild.members.fetch();
   const role = guild.roles.cache.get('1120709236918337596');
   if (!role) return;
-  const members = role.members.map(m => [m.user.username, m.user.id]);
+
+  const newData = role.members.map(m => [
+    m.user.username,
+    m.user.id,
+    m.displayName,
+    m.user.displayAvatarURL({ format: 'png', dynamic: true, size: 256 }),
+  ]);
 
   try {
-    await sheets.spreadsheets.values.clear({
-      ...ss('PIT!A2:B'),
+    const res = await sheets.spreadsheets.values.get({
+      ...ss('PIT!A2:E'),
     });
-    await sheets.spreadsheets.values.update({
-      ...ss('PIT!A2:B'),
-      valueInputOption: 'RAW',
-      resource: { values: members },
-    });
-    console.log('[PIT] Updated trainee list');
+    const existingData = res.data.values || [];
+
+    // Compare columns A, B, D, E only (exclude C at index 2)
+    const existingTrimmed = existingData.map(r => [r[0], r[1], r[3], r[4]]);
+    const newTrimmed = newData.map(r => r);
+
+    if (JSON.stringify(existingTrimmed) !== JSON.stringify(newTrimmed)) {
+      await sheets.spreadsheets.values.clear({
+        ...ss('PIT!A2:B'),
+      });
+      await sheets.spreadsheets.values.clear({
+        ...ss('PIT!D2:E'),
+      });
+      await sheets.spreadsheets.values.update({
+        ...ss('PIT!A2:B'),
+        valueInputOption: 'RAW',
+        resource: { values: newData.map(r => [r[0], r[1]]) },
+      });
+      await sheets.spreadsheets.values.update({
+        ...ss('PIT!D2:E'),
+        valueInputOption: 'RAW',
+        resource: { values: newData.map(r => [r[2], r[3]]) },
+      });
+      console.log('[PIT] Updated trainee list (data changed)');
+    } else {
+      console.log('[PIT] No changes — skipped');
+    }
   } catch (err) {
     await sendError('PIT', 'Trainee update', err);
   }
