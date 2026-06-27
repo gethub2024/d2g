@@ -3,13 +3,11 @@ name: Daily Discord Bot
 on:
   # ─────────────────────────────────────────────────────────
   # Change time (IST):
-  #   8:28 AM IST  →  "58 2 * * *"   (2:58 UTC)
-  #   9:00 AM IST  →  "30 3 * * *"   (3:30 UTC)
-  #  10:00 AM IST  →  "30 4 * * *"   (4:30 UTC)
+  #   8:32 AM IST  →  "2 3 * * *"   (3:02 UTC)
   # Formula: UTC hour = IST hour - 5, UTC min = IST min - 30
   # ─────────────────────────────────────────────────────────
   schedule:
-    - cron: '58 2 * * *'
+    - cron: '2 3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -35,4 +33,11 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: echo "$GOOGLE_CREDENTIALS" > file.json
+      - name: Check GitHub Actions billing
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          USER=$(gh api /user --jq '.login')
+          echo "GH_INCLUDED_MINUTES=$(gh api /users/$USER/settings/billing/actions --jq '.included_minutes')" >> $GITHUB_ENV
+          echo "GH_USED_MINUTES=$(gh api /users/$USER/settings/billing/actions --jq '.total_minutes_used')" >> $GITHUB_ENV
       - run: npm start

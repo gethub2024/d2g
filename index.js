@@ -11,7 +11,7 @@ const CHANNELS = [
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 7 * 60 * 1000;
+const MAX_RUN_MS = 5 * 60 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
@@ -21,6 +21,7 @@ for (const key of required) {
 }
 
 const stats = { DA: { catchup: 0, realtime: 0 }, DT: { catchup: 0, realtime: 0 }, GR: { catchup: 0, realtime: 0 }, errors: 0 };
+let startTime = null;
 
 const client = new Client({
   intents: [
@@ -119,12 +120,23 @@ function buildSummaryEmbed() {
   const hasErrors = stats.errors > 0;
   const color = hasErrors ? 0xF1C40F : 0x2ECC71;
 
+  const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+  const elapsedStr = `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+
+  const ghIncluded = parseInt(process.env.GH_INCLUDED_MINUTES) || 0;
+  const ghUsed = parseInt(process.env.GH_USED_MINUTES) || 0;
+  const ghRemaining = ghIncluded - ghUsed;
+
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle('📊 Daily Report — 8:28 - 8:35 AM')
+    .setTitle(`📊 Daily Report — Ran for ${elapsedStr}`)
     .setDescription(lines.join('\n'))
     .addFields({ name: '────────────────────────', value: `**Total:** ${totalAll} messages logged` })
     .setTimestamp();
+
+  if (ghIncluded > 0) {
+    embed.addFields({ name: '────────────────────────', value: `**GitHub Actions:** ${ghRemaining} / ${ghIncluded} min remaining this month` });
+  }
 
   if (hasErrors) {
     embed.setFooter({ text: `⚠️ ${stats.errors} error(s) occurred` });
@@ -194,15 +206,17 @@ async function ensureHeaders() {
 async function ensurePitHeader() {
   try {
     const res = await sheets.spreadsheets.values.get({
-      ...ss('PIT!A1:A1'),
+      ...ss('PIT!A1:B1'),
     });
-    if (!res.data.values?.[0]?.[0]) {
+    const existing = res.data.values?.[0];
+    const expected = ['Username', 'User ID'];
+    if (!existing || existing.join('|') !== expected.join('|')) {
       await sheets.spreadsheets.values.update({
-        ...ss('PIT!A1:A1'),
+        ...ss('PIT!A1:B1'),
         valueInputOption: 'RAW',
-        resource: { values: [['Username']] },
+        resource: { values: [expected] },
       });
-      console.log('[HEADER] Added header to PIT');
+      console.log('[HEADER] Added headers to PIT');
     }
   } catch (err) {
     await sendError('PIT', 'Header check', err);
@@ -453,16 +467,16 @@ async function updateTraineeRoleColumn() {
   await guild.members.fetch();
   const role = guild.roles.cache.get('1120709236918337596');
   if (!role) return;
-  const names = role.members.map(m => m.user.username);
+  const members = role.members.map(m => [m.user.username, m.user.id]);
 
   try {
     await sheets.spreadsheets.values.clear({
-      ...ss('PIT!A2:A'),
+      ...ss('PIT!A2:B'),
     });
     await sheets.spreadsheets.values.update({
-      ...ss('PIT!A2:A'),
+      ...ss('PIT!A2:B'),
       valueInputOption: 'RAW',
-      resource: { values: names.map(n => [n]) },
+      resource: { values: members },
     });
     console.log('[PIT] Updated trainee list');
   } catch (err) {
@@ -472,6 +486,7 @@ async function updateTraineeRoleColumn() {
 
 client.once('clientReady', async () => {
   console.log('Bot is online!');
+  startTime = Date.now();
 
   await ensureHeaders();
   await ensurePitHeader();
