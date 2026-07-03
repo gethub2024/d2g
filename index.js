@@ -123,20 +123,12 @@ function buildSummaryEmbed() {
   const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
   const elapsedStr = `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
 
-  const ghIncluded = parseInt(process.env.GH_INCLUDED_MINUTES) || 0;
-  const ghUsed = parseInt(process.env.GH_USED_MINUTES) || 0;
-  const ghRemaining = ghIncluded - ghUsed;
-
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`📊 Daily Report — Ran for ${elapsedStr}`)
     .setDescription(lines.join('\n'))
     .addFields({ name: '────────────────────────', value: `**Total:** ${totalAll} messages logged` })
     .setTimestamp();
-
-  if (ghIncluded > 0) {
-    embed.addFields({ name: '────────────────────────', value: `**GitHub Actions:** ${ghRemaining} / ${ghIncluded} min remaining this month` });
-  }
 
   if (hasErrors) {
     embed.setFooter({ text: `⚠️ ${stats.errors} error(s) occurred` });

@@ -2,12 +2,12 @@ name: Daily Discord Bot
 
 on:
   # ─────────────────────────────────────────────────────────
-  # Change time (IST):
-  #   8:32 AM IST  →  "2 3 * * *"   (3:02 UTC)
+  # Backup schedule (primary is cron-job.org at 8:32 AM IST):
+  #   9:00 AM IST  →  "30 3 * * *"   (3:30 UTC)
   # Formula: UTC hour = IST hour - 5, UTC min = IST min - 30
   # ─────────────────────────────────────────────────────────
   schedule:
-    - cron: '2 3 * * *'
+    - cron: '30 3 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [trigger-bot]
@@ -32,14 +32,8 @@ jobs:
           echo "SPREADSHEET_ID=${{ secrets.SPREADSHEET_ID }}" >> .env
           echo "ERROR_CHANNEL_ID=${{ secrets.ERROR_CHANNEL_ID }}" >> .env
       - name: Create file.json
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: echo "$GOOGLE_CREDENTIALS" > file.json
-      - name: Check GitHub Actions billing
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          USER=$(gh api /user --jq '.login')
-          echo "GH_INCLUDED_MINUTES=$(gh api /users/$USER/settings/billing/actions --jq '.included_minutes')" >> $GITHUB_ENV
-          echo "GH_USED_MINUTES=$(gh api /users/$USER/settings/billing/actions --jq '.total_minutes_used')" >> $GITHUB_ENV
+          cat > file.json <<'EOF'
+          ${{ secrets.GOOGLE_CREDENTIALS }}
+          EOF
       - run: npm start
