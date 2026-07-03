@@ -173,6 +173,31 @@ async function flushBuffer() {
   }
 }
 
+function todayStr() {
+  return moment().tz('Asia/Kolkata').format('DD/MM/YYYY');
+}
+
+async function hasRunToday() {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      ...ss('logs!A1:A1'),
+    });
+    return res.data.values?.[0]?.[0] === todayStr();
+  } catch {
+    return false;
+  }
+}
+
+async function markRunCompleted() {
+  try {
+    await sheets.spreadsheets.values.update({
+      ...ss('logs!A1:A1'),
+      valueInputOption: 'RAW',
+      resource: { values: [[todayStr()]] },
+    });
+  } catch {}
+}
+
 async function ensureHeaders() {
   for (const { sheet } of CHANNELS) {
     try {
@@ -522,12 +547,19 @@ client.once('clientReady', async () => {
   console.log('Bot is online!');
   startTime = Date.now();
 
+  if (await hasRunToday()) {
+    console.log('[STARTUP] Already ran today, skipping');
+    client.destroy();
+    return;
+  }
+
   await ensureHeaders();
   await ensurePitHeader();
   await catchUpMessages();
   await checkRecentEdits();
   await checkDeletedMessages();
   await updateTraineeRoleColumn();
+  await markRunCompleted();
 
   flushTimer = setInterval(flushBuffer, FLUSH_INTERVAL_MS);
 
