@@ -11,7 +11,7 @@ const CHANNELS = [
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 5 * 60 * 1000;
+const MAX_RUN_MS = 3 * 60 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
