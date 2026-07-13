@@ -11,7 +11,7 @@ const CHANNELS = [
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 3 * 60 * 1000;
+const MAX_RUN_MS = 150 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
@@ -547,8 +547,19 @@ client.once('clientReady', async () => {
   console.log('Bot is online!');
   startTime = Date.now();
 
+  const shutdownTimer = setTimeout(async () => {
+    console.log('[SHUTDOWN] Time limit reached. Flushing buffer...');
+    clearInterval(flushTimer);
+    await flushBuffer();
+    await sendSummary();
+    console.log('[SHUTDOWN] Goodbye!');
+    client.destroy();
+    process.exit(0);
+  }, MAX_RUN_MS);
+
   if (await hasRunToday()) {
     console.log('[STARTUP] Already ran today, skipping');
+    clearTimeout(shutdownTimer);
     client.destroy();
     return;
   }
@@ -562,16 +573,6 @@ client.once('clientReady', async () => {
   await markRunCompleted();
 
   flushTimer = setInterval(flushBuffer, FLUSH_INTERVAL_MS);
-
-  setTimeout(async () => {
-    console.log('[SHUTDOWN] Time limit. Flushing buffer...');
-    clearInterval(flushTimer);
-    await flushBuffer();
-    await sendSummary();
-    console.log('[SHUTDOWN] Goodbye!');
-    client.destroy();
-    process.exit(0);
-  }, MAX_RUN_MS);
 });
 
 process.on('SIGINT', async () => {

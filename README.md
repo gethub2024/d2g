@@ -1,6 +1,6 @@
 # Discord to Google Sheet Bot
 
-A Discord bot that logs messages from specific channels to a Google Sheet. Runs daily via GitHub Actions with a 7-minute window.
+A Discord bot that logs messages from specific channels to a Google Sheet. Runs daily via GitHub Actions with a 2.5-minute window.
 
 ---
 
@@ -10,7 +10,7 @@ A Discord bot that logs messages from specific channels to a Google Sheet. Runs 
 |---|---|
 | Current run time | **8:28 AM IST** |
 | GitHub cron (UTC) | `58 2 * * *` |
-| Bot duration | **7 minutes** |
+| Bot duration | **2 minutes 30 seconds** |
 | Workflow timeout | **10 minutes** |
 
 ### Change the run time
@@ -37,7 +37,7 @@ Formula: **UTC time = IST time − 5 hours 30 minutes**
 Edit `index.js` line 14:
 
 ```js
-const MAX_RUN_MS = 7 * 60 * 1000; // 7 minutes
+const MAX_RUN_MS = 150 * 1000; // 2 minutes 30 seconds
 ```
 
 Also update `bot.yml` line 18 so GitHub doesn't kill the bot early:
