@@ -28,7 +28,7 @@ jobs:
           echo "BOT_TOKEN=${{ secrets.BOT_TOKEN }}" >> .env
           echo "CHANNEL_1_ID=${{ secrets.CHANNEL_1_ID }}" >> .env
           echo "CHANNEL_2_ID=${{ secrets.CHANNEL_2_ID }}" >> .env
-          echo "CHANNEL_3_ID=${{ secrets.CHANNEL_3_ID }}" >> .env
+
           echo "SPREADSHEET_ID=${{ secrets.SPREADSHEET_ID }}" >> .env
           echo "ERROR_CHANNEL_ID=${{ secrets.ERROR_CHANNEL_ID }}" >> .env
       - name: Create file.json

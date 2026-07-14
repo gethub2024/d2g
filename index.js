@@ -6,21 +6,20 @@ import moment from 'moment-timezone';
 const CHANNELS = [
   { id: process.env.CHANNEL_1_ID, sheet: 'DA' },
   { id: process.env.CHANNEL_2_ID, sheet: 'DT' },
-  { id: process.env.CHANNEL_3_ID, sheet: 'GR' },
 ];
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 150 * 1000;
+const MAX_RUN_MS = 120 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
-const required = ['BOT_TOKEN', 'SPREADSHEET_ID', 'CHANNEL_1_ID', 'CHANNEL_2_ID', 'CHANNEL_3_ID', 'ERROR_CHANNEL_ID'];
+const required = ['BOT_TOKEN', 'SPREADSHEET_ID', 'CHANNEL_1_ID', 'CHANNEL_2_ID', 'ERROR_CHANNEL_ID'];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
 
-const stats = { DA: { catchup: 0, realtime: 0 }, DT: { catchup: 0, realtime: 0 }, GR: { catchup: 0, realtime: 0 }, errors: 0 };
+const stats = { DA: { catchup: 0, realtime: 0 }, DT: { catchup: 0, realtime: 0 }, errors: 0 };
 let startTime = null;
 
 const client = new Client({
@@ -105,7 +104,7 @@ async function sendError(sheetName, action, err) {
 }
 
 function buildSummaryEmbed() {
-  const total = { DA: 0, DT: 0, GR: 0 };
+  const total = { DA: 0, DT: 0 };
   let totalAll = 0;
   const lines = [];
   for (const sheet of Object.keys(stats)) {
@@ -144,7 +143,7 @@ async function sendSummary() {
   await sendEmbed(ERROR_CHANNEL_ID, buildSummaryEmbed());
 }
 
-const buffer = { DA: [], DT: [], GR: [] };
+const buffer = { DA: [], DT: [] };
 let flushTimer = null;
 
 function pushToBuffer(sheetName, message) {
@@ -195,7 +194,10 @@ async function markRunCompleted() {
       valueInputOption: 'RAW',
       resource: { values: [[todayStr()]] },
     });
-  } catch {}
+    console.log(`[LOGS] Wrote ${todayStr()} to logs!A1`);
+  } catch (err) {
+    console.error(`[LOGS] Failed to write date: ${err.message}`);
+  }
 }
 
 async function ensureHeaders() {
@@ -551,6 +553,7 @@ client.once('clientReady', async () => {
     console.log('[SHUTDOWN] Time limit reached. Flushing buffer...');
     clearInterval(flushTimer);
     await flushBuffer();
+    await markRunCompleted();
     await sendSummary();
     console.log('[SHUTDOWN] Goodbye!');
     client.destroy();
@@ -564,13 +567,14 @@ client.once('clientReady', async () => {
     return;
   }
 
+  await markRunCompleted();
+
   await ensureHeaders();
   await ensurePitHeader();
   await catchUpMessages();
   await checkRecentEdits();
   await checkDeletedMessages();
   await updateTraineeRoleColumn();
-  await markRunCompleted();
 
   flushTimer = setInterval(flushBuffer, FLUSH_INTERVAL_MS);
 });
