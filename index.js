@@ -10,7 +10,7 @@ const CHANNELS = [
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 120 * 1000;
+const MAX_RUN_MS = 150 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
@@ -45,6 +45,21 @@ function ss(range) {
     spreadsheetId: process.env.SPREADSHEET_ID,
     range,
   };
+}
+
+async function getNextRow(sheetName) {
+  const res = await sheets.spreadsheets.values.get({
+    ...ss(`${sheetName}!A:E`),
+  });
+  const rows = res.data.values;
+  if (!rows || rows.length <= 1) return 2;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const row = rows[i];
+    if (row && row.some(cell => cell && cell.toString().trim() !== '')) {
+      return i + 2;
+    }
+  }
+  return 2;
 }
 
 function getSheetByChannel(channelId) {
@@ -157,12 +172,14 @@ async function flushBuffer() {
 
     const rows = snapshot.map(e => e.row);
     try {
-      await sheets.spreadsheets.values.append({
-        ...ss(`${sheetName}!A:E`),
+      const nextRow = await getNextRow(sheetName);
+      const range = `${sheetName}!A${nextRow}:E${nextRow + rows.length - 1}`;
+      await sheets.spreadsheets.values.update({
+        ...ss(range),
         valueInputOption: 'RAW',
         resource: { values: rows },
       });
-      console.log(`[FLUSH] Appended ${rows.length} rows to ${sheetName}`);
+      console.log(`[FLUSH] Wrote ${rows.length} rows to ${sheetName} at row ${nextRow}`);
 
       const msgs = snapshot.map(e => e.message);
       reactSequentially(msgs);
@@ -287,7 +304,7 @@ async function catchUpMessages() {
 
       const newMsgs = [...messages.values()]
         .filter(msg => !msg.author.bot && !existing.has(msg.id))
-        .reverse();
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
       if (newMsgs.length === 0) {
         console.log(`[CATCHUP] ${sheet}: 0 new (all ${messages.size} already in sheet)`);
@@ -295,13 +312,15 @@ async function catchUpMessages() {
       }
 
       const rows = newMsgs.map(formatRow);
-      await sheets.spreadsheets.values.append({
-        ...ss(`${sheet}!A:E`),
+      const nextRow = await getNextRow(sheet);
+      const range = `${sheet}!A${nextRow}:E${nextRow + rows.length - 1}`;
+      await sheets.spreadsheets.values.update({
+        ...ss(range),
         valueInputOption: 'RAW',
         resource: { values: rows },
       });
       stats[sheet].catchup += rows.length;
-      console.log(`[CATCHUP] ${sheet}: appended ${rows.length} new messages`);
+      console.log(`[CATCHUP] ${sheet}: wrote ${rows.length} messages at row ${nextRow}`);
       reactSequentially(newMsgs);
     } catch (err) {
       await sendError(sheet, 'Catch-up', err);
@@ -311,7 +330,53 @@ async function catchUpMessages() {
   console.log('[CATCHUP] Done');
 }
 
-async function checkRecentEdits() {
+async function reorderSheetData() {
+  for (const { sheet } of CHANNELS) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        ...ss(`${sheet}!A:E`),
+      });
+      const rows = res.data.values;
+      if (!rows || rows.length <= 2) continue;
+
+      const dataRows = rows.slice(1);
+
+      const sorted = [...dataRows].sort((a, b) => {
+        const idA = a[4];
+        const idB = b[4];
+        if (!idA && !idB) return 0;
+        if (!idA) return 1;
+        if (!idB) return -1;
+        try {
+          const bigA = BigInt(idA);
+          const bigB = BigInt(idB);
+          return bigA < bigB ? -1 : bigA > bigB ? 1 : 0;
+        } catch {
+          return 0;
+        }
+      });
+
+      let needsReorder = false;
+      for (let i = 0; i < dataRows.length; i++) {
+        if (dataRows[i][4] !== sorted[i][4]) {
+          needsReorder = true;
+          break;
+        }
+      }
+      if (!needsReorder) continue;
+
+      await sheets.spreadsheets.values.update({
+        ...ss(`${sheet}!A2:E${sorted.length + 1}`),
+        valueInputOption: 'RAW',
+        resource: { values: sorted },
+      });
+      console.log(`[REORDER] ${sheet}: re-sorted ${sorted.length} rows by message ID`);
+    } catch (err) {
+      await sendError(sheet, 'Reorder', err);
+    }
+  }
+}
+  async function checkRecentEdits() {
   console.log('[EDITCHECK] Checking recent edits...');
 
   for (const { id, sheet } of CHANNELS) {
@@ -571,6 +636,7 @@ client.once('clientReady', async () => {
 
   await ensureHeaders();
   await ensurePitHeader();
+  await reorderSheetData();
   await catchUpMessages();
   await checkRecentEdits();
   await checkDeletedMessages();
