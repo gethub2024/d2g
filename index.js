@@ -627,6 +627,80 @@ async function updateTraineeRoleColumn() {
   }
 }
 
+async function syncNewTraineeRoles() {
+  const logsChannelId = process.env.MEMBERS_LOGS_CHANNEL_ID;
+  const dynoId = process.env.DYNO_BOT_ID;
+  if (!logsChannelId || !dynoId) {
+    console.log('[SYNC] Skipped — missing MEMBERS_LOGS_CHANNEL_ID or DYNO_BOT_ID');
+    return;
+  }
+
+  const logsChannel = await client.channels.fetch(logsChannelId);
+  if (!logsChannel) {
+    console.log('[SYNC] Logs channel not found');
+    return;
+  }
+
+  const lastRes = await sheets.spreadsheets.values.get({ ...ss('logs!B1:B1') });
+  const lastCheckedId = lastRes.data.values?.[0]?.[0] || null;
+
+  const options = { limit: 100 };
+  if (lastCheckedId) options.after = lastCheckedId;
+
+  const messages = await logsChannel.messages.fetch(options);
+  if (messages.size === 0) {
+    console.log('[SYNC] No new messages since last check');
+    return;
+  }
+
+  const newGrants = [];
+  for (const msg of messages.values()) {
+    if (msg.author.id !== dynoId) continue;
+    for (const embed of msg.embeds) {
+      const desc = embed.description || '';
+      if (!desc.toLowerCase().includes('was given the \`trainee\` role')) continue;
+      const footer = embed.footer?.text || '';
+      const match = footer.match(/ID:\s*(\d{17,20})/);
+      if (!match) continue;
+      newGrants.push({
+        userId: match[1],
+        date: moment.tz(msg.createdAt, 'Asia/Kolkata').format('YYYY-MM-DD'),
+      });
+    }
+  }
+
+  if (newGrants.length === 0) {
+    console.log('[SYNC] No new Trainee role grants');
+  } else {
+    const pitRes = await sheets.spreadsheets.values.get({ ...ss('PIT!A2:C') });
+    const pitRows = pitRes.data.values || [];
+    let updated = 0;
+
+    for (const grant of newGrants) {
+      const idx = pitRows.findIndex(r => r[1] === grant.userId);
+      if (idx !== -1) {
+        const rowNum = idx + 2;
+        await sheets.spreadsheets.values.update({
+          ...ss(`PIT!C${rowNum}`),
+          valueInputOption: 'RAW',
+          resource: { values: [[grant.date]] },
+        });
+        updated++;
+      }
+    }
+    console.log(`[SYNC] Updated ${updated}/${newGrants.length} PIT rows from ${newGrants.length} new grants`);
+  }
+
+  const lastMsg = messages.last();
+  if (lastMsg) {
+    await sheets.spreadsheets.values.update({
+      ...ss('logs!B1:B1'),
+      valueInputOption: 'RAW',
+      resource: { values: [[lastMsg.id]] },
+    });
+  }
+}
+
 client.once('clientReady', async () => {
   console.log('Bot is online!');
   startTime = Date.now();
@@ -653,6 +727,7 @@ client.once('clientReady', async () => {
 
   await ensureHeaders();
   await ensurePitHeader();
+  await syncNewTraineeRoles();
   await reorderSheetData();
   await catchUpMessages();
   await checkRecentEdits();
