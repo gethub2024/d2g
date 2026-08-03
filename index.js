@@ -255,6 +255,20 @@ async function ensurePitHeader() {
       console.log('[HEADER] Added A:B headers to PIT');
     }
 
+    const resC = await sheets.spreadsheets.values.get({
+      ...ss('PIT!C1:C1'),
+    });
+    const existingC = resC.data.values?.[0];
+    const expectedC = ['Date Got Role'];
+    if (!existingC || existingC[0] !== expectedC[0]) {
+      await sheets.spreadsheets.values.update({
+        ...ss('PIT!C1:C1'),
+        valueInputOption: 'RAW',
+        resource: { values: [expectedC] },
+      });
+      console.log('[HEADER] Added C header to PIT');
+    }
+
     const resD = await sheets.spreadsheets.values.get({
       ...ss('PIT!D1:E1'),
     });
@@ -567,39 +581,42 @@ async function updateTraineeRoleColumn() {
   const role = guild.roles.cache.get('1120709236918337596');
   if (!role) return;
 
-  const newData = role.members.map(m => [
-    m.user.username,
-    m.user.id,
-    m.displayName,
-    m.user.displayAvatarURL({ format: 'png', dynamic: true, size: 256 }),
-  ]);
+  const res = await sheets.spreadsheets.values.get({
+    ...ss('PIT!A2:E'),
+  });
+  const existingData = res.data.values || [];
+
+  const existingDates = new Map();
+  for (const row of existingData) {
+    if (row[1] && row[2]) {
+      existingDates.set(row[1].toString().trim(), row[2]);
+    }
+  }
+
+  const newData = role.members.map(m => {
+    const userId = m.user.id;
+    const preservedDate = existingDates.get(userId) || 'first';
+    return [
+      m.user.username,
+      m.user.id,
+      preservedDate,
+      m.displayName,
+      m.user.displayAvatarURL({ format: 'png', dynamic: true, size: 256 }),
+    ];
+  });
 
   try {
-    const res = await sheets.spreadsheets.values.get({
-      ...ss('PIT!A2:E'),
-    });
-    const existingData = res.data.values || [];
-
-    // Compare columns A, B, D, E only (exclude C at index 2)
-    const existingTrimmed = existingData.map(r => [r[0], r[1], r[3], r[4]]);
+    const existingTrimmed = existingData.map(r => [r[0], r[1], r[2], r[3], r[4]]);
     const newTrimmed = newData.map(r => r);
 
     if (JSON.stringify(existingTrimmed) !== JSON.stringify(newTrimmed)) {
       await sheets.spreadsheets.values.clear({
-        ...ss('PIT!A2:B'),
-      });
-      await sheets.spreadsheets.values.clear({
-        ...ss('PIT!D2:E'),
+        ...ss('PIT!A2:E'),
       });
       await sheets.spreadsheets.values.update({
-        ...ss('PIT!A2:B'),
+        ...ss('PIT!A2:E'),
         valueInputOption: 'RAW',
-        resource: { values: newData.map(r => [r[0], r[1]]) },
-      });
-      await sheets.spreadsheets.values.update({
-        ...ss('PIT!D2:E'),
-        valueInputOption: 'RAW',
-        resource: { values: newData.map(r => [r[2], r[3]]) },
+        resource: { values: newData },
       });
       console.log('[PIT] Updated trainee list (data changed)');
     } else {
