@@ -1,7 +1,24 @@
 import 'dotenv/config';
 import { google } from 'googleapis';
-import { Client, GatewayIntentBits, Partials, EmbedBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, EmbedBuilder, AuditLogEvent, PermissionFlagsBits } from 'discord.js';
 import moment from 'moment-timezone';
+
+const TRAINEE_ROLE_ID = '1120709236918337596';
+// Staff who grant the Trainee role — we page the audit log once per ID
+// (same filter you use manually: Member Role Update + executor), then keep
+// only the latest $add of TRAINEE_ROLE_ID per member.
+const ROLE_GRANTOR_IDS = new Set([
+  '722686657878294568',
+  '1027460996744351754',
+  '1113838550614540329',
+  '814913231889891388',
+  '1082555422382248057',
+]);
+// Cursor cell for audit-log incremental sync (separate from old Dyno logs!B1 cursor).
+const AUDIT_CURSOR_RANGE = 'logs!C1';
+// Per-grantor pagination: 5 grantors × 10 pages × 100 = up to 5000 filtered
+// MEMBER_ROLE_UPDATE entries per full backfill (vs 1000 unfiltered before).
+const AUDIT_PAGES_PER_GRANTOR = 10;
 
 const CHANNELS = [
   { id: process.env.CHANNEL_1_ID, sheet: 'DA' },
@@ -10,7 +27,10 @@ const CHANNELS = [
 
 const HEADERS = ['Username', 'Content', 'Date', 'Time', 'Message ID'];
 const ERROR_CHANNEL_ID = process.env.ERROR_CHANNEL_ID;
-const MAX_RUN_MS = 150 * 1000;
+// 200s bot + ~60s setup/npm = ~4.5min wall → 5 billed min worst case.
+// 2 runs/day × 30 = 60 jobs → ~240-300 min/month, keeps buffer under your 300 cap.
+// (240s bot would push every job to 5-6 billed min → 300-360, no buffer.)
+const MAX_RUN_MS = 200 * 1000;
 const FLUSH_INTERVAL_MS = 30 * 1000;
 const REACTION_DELAY_MS = 50;
 
@@ -565,20 +585,19 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 });
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  const roleId = '1120709236918337596';
-  const hadRole = oldMember.roles.cache.has(roleId);
-  const hasRole = newMember.roles.cache.has(roleId);
+  const hadRole = oldMember.roles.cache.has(TRAINEE_ROLE_ID);
+  const hasRole = newMember.roles.cache.has(TRAINEE_ROLE_ID);
 
   if (hadRole !== hasRole) {
-    await updateTraineeRoleColumn();
+    await updateTraineeRoleColumn(new Map());
   }
 });
 
-async function updateTraineeRoleColumn() {
+async function updateTraineeRoleColumn(auditGrants = new Map()) {
   const guild = client.guilds.cache.first();
   if (!guild) return;
   await guild.members.fetch();
-  const role = guild.roles.cache.get('1120709236918337596');
+  const role = guild.roles.cache.get(TRAINEE_ROLE_ID);
   if (!role) return;
 
   const res = await sheets.spreadsheets.values.get({
@@ -595,11 +614,14 @@ async function updateTraineeRoleColumn() {
 
   const newData = role.members.map(m => {
     const userId = m.user.id;
+    // Prefer authoritative audit-log datetime; fall back to preserved sheet value.
+    const auditDate = auditGrants.get(userId);
     const preservedDate = existingDates.get(userId) || 'first';
+    const finalDate = auditDate || preservedDate;
     return [
       m.user.username,
       m.user.id,
-      preservedDate,
+      finalDate,
       m.displayName,
       m.user.displayAvatarURL({ format: 'png', dynamic: true, size: 256 }),
     ];
@@ -627,78 +649,128 @@ async function updateTraineeRoleColumn() {
   }
 }
 
-async function syncNewTraineeRoles() {
-  const logsChannelId = process.env.MEMBERS_LOGS_CHANNEL_ID;
-  const dynoId = process.env.DYNO_BOT_ID;
-  if (!logsChannelId || !dynoId) {
-    console.log('[SYNC] Skipped — missing MEMBERS_LOGS_CHANNEL_ID or DYNO_BOT_ID');
-    return;
+function formatAuditDateTime(createdAt) {
+  return moment(createdAt).tz('Asia/Kolkata').format('DD/MM/YYYY hh:mm:ss A');
+}
+
+function extractTraineeAdd(entry) {
+  if (!entry) return null;
+  // entry.action should be 25 (MemberRoleUpdate); coerce since some
+  // discord.js versions return it as string.
+  if (Number(entry.action) !== Number(AuditLogEvent.MemberRoleUpdate)) return null;
+  let changes = entry.changes || [];
+  // changes is normally an array, but handle Collection-like shapes defensively.
+  if (!Array.isArray(changes) && typeof changes.values === 'function') changes = [...changes.values()];
+  if (!Array.isArray(changes)) return null;
+  for (const change of changes) {
+    if (!change || change.key !== '$add') continue;
+    const added = change.new ?? change.new_value ?? change.newValue;
+    if (!Array.isArray(added)) continue;
+    if (!added.some(r => r && r.id && r.id.toString() === TRAINEE_ROLE_ID)) continue;
+    if (!entry.targetId) continue;
+    const createdAt = entry.createdAt instanceof Date ? entry.createdAt : new Date(entry.createdTimestamp);
+    if (Number.isNaN(createdAt.valueOf())) continue;
+    return { userId: entry.targetId.toString(), createdAt, entryId: entry.id };
+  }
+  return null;
+}
+
+async function syncTraineeRolesFromAuditLog() {
+  const grants = new Map();
+  const guild = client.guilds.cache.first();
+  if (!guild) {
+    console.log('[AUDIT] Skipped — guild not cached');
+    return grants;
   }
 
-  const logsChannel = await client.channels.fetch(logsChannelId);
-  if (!logsChannel) {
-    console.log('[SYNC] Logs channel not found');
-    return;
+  try {
+    const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+    if (me && !me.permissions.has(PermissionFlagsBits.ViewAuditLog)) {
+      await sendError('PIT', 'Audit sync', new Error('Bot lacks View Audit Log permission'));
+      console.log('[AUDIT] Skipped — missing View Audit Log permission');
+      return grants;
+    }
+  } catch {
+    // permission check is best-effort; fetch below will surface real errors
   }
 
-  const lastRes = await sheets.spreadsheets.values.get({ ...ss('logs!B1:B1') });
-  const lastCheckedId = lastRes.data.values?.[0]?.[0] || null;
-
-  const options = { limit: 100 };
-  if (lastCheckedId) options.after = lastCheckedId;
-
-  const messages = await logsChannel.messages.fetch(options);
-  if (messages.size === 0) {
-    console.log('[SYNC] No new messages since last check');
-    return;
+  let cursor = null;
+  try {
+    const curRes = await sheets.spreadsheets.values.get({ ...ss(AUDIT_CURSOR_RANGE) });
+    const saved = curRes.data.values?.[0]?.[0];
+    if (saved && /^\d{17,20}$/.test(saved.toString().trim())) cursor = saved.toString().trim();
+  } catch {
+    cursor = null;
   }
 
-  const newGrants = [];
-  for (const msg of messages.values()) {
-    if (msg.author.id !== dynoId) continue;
-    for (const embed of msg.embeds) {
-      const desc = embed.description || '';
-      if (!desc.toLowerCase().includes('was given the \`trainee\` role')) continue;
-      const footer = embed.footer?.text || '';
-      const match = footer.match(/ID:\s*(\d{17,20})/);
-      if (!match) continue;
-      newGrants.push({
-        userId: match[1],
-        date: moment.tz(msg.createdAt, 'Asia/Kolkata').format('YYYY-MM-DD'),
+  let newestSeen = null;
+  const grantsTs = new Map(); // userId -> absolute ms of latest $add (avoids IST re-parse bias)
+
+  try {
+    console.log(`[AUDIT] Start — cursor=${cursor ?? 'none'}, grantors=${ROLE_GRANTOR_IDS.size}, pages/grantor=${AUDIT_PAGES_PER_GRANTOR}`);
+    let totalScanned = 0;
+    for (const grantorId of ROLE_GRANTOR_IDS) {
+      // Stop paging early if shutdown is near so PIT write + flush still fit.
+      if (startTime && Date.now() - startTime > MAX_RUN_MS - 45 * 1000) {
+        console.log('[AUDIT] Stopping early — near time limit');
+        break;
+      }
+      let before = null;
+      let scannedThisGrantor = 0;
+      let hitsThisGrantor = 0;
+      for (let page = 0; page < AUDIT_PAGES_PER_GRANTOR; page++) {
+        const options = { type: AuditLogEvent.MemberRoleUpdate, limit: 100, user: grantorId };
+        if (before) {
+          options.before = before;
+        } else if (cursor) {
+          options.after = cursor;
+        }
+        const logs = await guild.fetchAuditLogs(options);
+        if (page === 0 && logs.entries.size > 0) {
+          const sample = logs.entries.first();
+          console.log(`[AUDIT] grantor=${grantorId} page=0 entries=${logs.entries.size} sampleAction=${sample?.action} sampleChanges=${JSON.stringify(sample?.changes)?.slice(0, 200)}`);
+        }
+        if (logs.entries.size === 0) break;
+
+        let oldestInBatch = null;
+        for (const entry of logs.entries.values()) {
+          if (!newestSeen || BigInt(entry.id) > BigInt(newestSeen)) newestSeen = entry.id;
+          oldestInBatch = entry.id;
+          totalScanned++;
+          scannedThisGrantor++;
+          if (cursor && BigInt(entry.id) <= BigInt(cursor)) continue;
+          const hit = extractTraineeAdd(entry);
+          if (!hit) continue;
+          hitsThisGrantor++;
+          const ts = hit.createdAt.valueOf();
+          if (!grants.has(hit.userId) || ts > (grantsTs.get(hit.userId) ?? -1)) {
+            grants.set(hit.userId, formatAuditDateTime(hit.createdAt));
+            grantsTs.set(hit.userId, ts);
+          }
+        }
+
+        const last = logs.entries.last();
+        if (!last) break;
+        before = last.id;
+        if (logs.entries.size < 100) break;
+        if (cursor && oldestInBatch && BigInt(oldestInBatch) <= BigInt(cursor)) break;
+      }
+      console.log(`[AUDIT] grantor=${grantorId} scanned=${scannedThisGrantor} traineeHits=${hitsThisGrantor}`);
+    }
+    console.log(`[AUDIT] Done — scanned=${totalScanned} uniqueTraineeGrants=${grants.size}`);
+
+    if (newestSeen) {
+      await sheets.spreadsheets.values.update({
+        ...ss(AUDIT_CURSOR_RANGE),
+        valueInputOption: 'RAW',
+        resource: { values: [[newestSeen]] },
       });
     }
+    console.log(`[AUDIT] Found ${grants.size} Trainee grants from audit log`);
+  } catch (err) {
+    await sendError('PIT', 'Audit sync', err);
   }
-
-  if (newGrants.length === 0) {
-    console.log('[SYNC] No new Trainee role grants');
-  } else {
-    const pitRes = await sheets.spreadsheets.values.get({ ...ss('PIT!A2:C') });
-    const pitRows = pitRes.data.values || [];
-    let updated = 0;
-
-    for (const grant of newGrants) {
-      const idx = pitRows.findIndex(r => r[1] === grant.userId);
-      if (idx !== -1) {
-        const rowNum = idx + 2;
-        await sheets.spreadsheets.values.update({
-          ...ss(`PIT!C${rowNum}`),
-          valueInputOption: 'RAW',
-          resource: { values: [[grant.date]] },
-        });
-        updated++;
-      }
-    }
-    console.log(`[SYNC] Updated ${updated}/${newGrants.length} PIT rows from ${newGrants.length} new grants`);
-  }
-
-  const lastMsg = messages.last();
-  if (lastMsg) {
-    await sheets.spreadsheets.values.update({
-      ...ss('logs!B1:B1'),
-      valueInputOption: 'RAW',
-      resource: { values: [[lastMsg.id]] },
-    });
-  }
+  return grants;
 }
 
 client.once('clientReady', async () => {
@@ -726,13 +798,15 @@ client.once('clientReady', async () => {
   await markRunCompleted();
 
   await ensureHeaders();
-  await ensurePitHeader();
-  await syncNewTraineeRoles();
+  // Priority 1: DA/DT message fill + edits + deletes first.
   await reorderSheetData();
   await catchUpMessages();
   await checkRecentEdits();
   await checkDeletedMessages();
-  await updateTraineeRoleColumn();
+  // Priority last: Trainee role dates, right before realtime listen / shutdown.
+  await ensurePitHeader();
+  const auditGrants = await syncTraineeRolesFromAuditLog();
+  await updateTraineeRoleColumn(auditGrants);
 
   flushTimer = setInterval(flushBuffer, FLUSH_INTERVAL_MS);
 });
