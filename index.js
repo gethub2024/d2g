@@ -14,7 +14,7 @@ const ROLE_GRANTOR_IDS = new Set([
   '814913231889891388',
   '1082555422382248057',
 ]);
-// Cursor cell for audit-log incremental sync (separate from old Dyno logs!B1 cursor).
+// Cursor cell for audit-log incremental sync.
 const AUDIT_CURSOR_RANGE = 'logs!C1';
 // Per-grantor pagination: 5 grantors × 10 pages × 100 = up to 5000 filtered
 // MEMBER_ROLE_UPDATE entries per full backfill (vs 1000 unfiltered before).
