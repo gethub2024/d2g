@@ -1,5 +1,9 @@
 # Discord → Google Sheets Bot
 
+[![CI](https://github.com/gethub2024/d2g/actions/workflows/ci.yml/badge.svg)](https://github.com/gethub2024/d2g/actions/workflows/ci.yml)
+[![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](LICENSE)
+[![Node 22](https://img.shields.io/badge/node-22-3c873a.svg)](package.json)
+
 A small Node.js bot that mirrors messages from Discord channels into a Google
 Spreadsheet, keeps edits and deletions in sync, and maintains a live list of
 members who hold a chosen Discord role.
@@ -30,9 +34,12 @@ Discord channel ──► bot (Node.js) ──► Google Sheets
   - [6. Deploy to GitHub Actions](#6-deploy-to-github-actions)
 - [Configuration reference](#configuration-reference)
 - [Changing the schedule](#changing-the-schedule)
+- [Development](#development)
+- [Roadmap](#roadmap)
 - [Security — what must stay private](#security--what-must-stay-private)
 - [Troubleshooting](#troubleshooting)
 - [Project structure](#project-structure)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -277,6 +284,33 @@ To change the runtime, edit `MAX_RUN_MS` in `index.js` and make sure
 
 ---
 
+## Development
+
+```bash
+npm install
+npm run check   # syntax check
+npm test        # unit tests (built-in node:test, no extra dependencies)
+```
+
+Pure helpers live in `src/lib.js` and are covered by `test/lib.test.js`. They do
+not touch Discord or Google, so the suite runs without any credentials.
+
+CI (`.github/workflows/ci.yml`) runs the same two commands on every push and
+pull request. The scheduled bot workflow is a separate file and is not affected.
+
+## Roadmap
+
+- [x] Unit tests for the pure helpers
+- [x] CI on every push and pull request
+- [x] Contributor docs, issue templates and a changelog
+- [ ] Retry with backoff around Google Sheets calls
+- [ ] Re-queue rows when a batch write fails instead of dropping them
+- [ ] Write-then-trim for the `PIT` tab so a failed write cannot empty it
+- [ ] Build per-sheet buffers from `CHANNELS` so adding a channel needs no code edits
+- [ ] Publish to npm
+
+---
+
 ## Security — what must stay private
 
 This repository is safe to publish **because the secrets are never stored in it.**
@@ -328,15 +362,30 @@ Recommended GitHub settings (free for public repositories):
 ```
 .
 ├── index.js                    # Bot logic
+├── src/lib.js                  # Pure helpers (formatting, snowflakes, sorting)
+├── test/lib.test.js            # Unit tests — node:test
 ├── package.json
 ├── .env.example                # Template — placeholders only
 ├── file.json.example           # Service-account template — placeholders only
-├── .github/workflows/bot.yml   # Scheduled run
+├── .github/workflows/bot.yml   # Scheduled run (daily)
+├── .github/workflows/ci.yml    # Lint + test on push / PR
+├── .github/ISSUE_TEMPLATE/     # Bug report and feature request forms
 ├── .gitignore                  # Blocks .env, file.json, archives
+├── CONTRIBUTING.md
+├── CHANGELOG.md
 ├── LICENSE
 ├── SECURITY.md                 # How to report a vulnerability
 └── README.md
 ```
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Start with
+**[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers how to report a bug, run the
+tests and send a PR. Security issues should go through
+[SECURITY.md](SECURITY.md), not the public issue tracker.
 
 ---
 

@@ -2,6 +2,13 @@ import 'dotenv/config';
 import { google } from 'googleapis';
 import { Client, GatewayIntentBits, Partials, EmbedBuilder, AuditLogEvent, PermissionFlagsBits } from 'discord.js';
 import moment from 'moment-timezone';
+import {
+  formatRow,
+  generateSnowflake,
+  isOlderThan48h,
+  compareByMessageId,
+  formatAuditDateTime,
+} from './src/lib.js';
 
 const TRAINEE_ROLE_ID = '1120709236918337596';
 // Staff who grant the Trainee role — we page the audit log once per ID
@@ -85,17 +92,6 @@ async function getNextRow(sheetName) {
 function getSheetByChannel(channelId) {
   const ch = CHANNELS.find(c => c.id === channelId);
   return ch ? ch.sheet : null;
-}
-
-function formatRow(msg) {
-  const ts = moment(msg.createdAt).tz('Asia/Kolkata');
-  return [
-    msg.author.username,
-    msg.content,
-    ts.format('DD/MM/YYYY'),
-    ts.format('hh:mm:ss A'),
-    msg.id,
-  ];
 }
 
 function sleep(ms) {
@@ -375,20 +371,7 @@ async function reorderSheetData() {
 
       const dataRows = rows.slice(1);
 
-      const sorted = [...dataRows].sort((a, b) => {
-        const idA = a[4];
-        const idB = b[4];
-        if (!idA && !idB) return 0;
-        if (!idA) return 1;
-        if (!idB) return -1;
-        try {
-          const bigA = BigInt(idA);
-          const bigB = BigInt(idB);
-          return bigA < bigB ? -1 : bigA > bigB ? 1 : 0;
-        } catch {
-          return 0;
-        }
-      });
+      const sorted = [...dataRows].sort(compareByMessageId);
 
       let needsReorder = false;
       for (let i = 0; i < dataRows.length; i++) {
@@ -461,18 +444,6 @@ async function reorderSheetData() {
   }
 
   console.log('[EDITCHECK] Done');
-}
-
-function generateSnowflake(timestampMs) {
-  const DISCORD_EPOCH = 1420070400000n;
-  return ((BigInt(timestampMs) - DISCORD_EPOCH) << 22n).toString();
-}
-
-function isOlderThan48h(messageId) {
-  const DISCORD_EPOCH = 1420070400000n;
-  const ts = (BigInt(messageId) >> 22n) + DISCORD_EPOCH;
-  const cutoff = BigInt(Date.now()) - 48n * 60n * 60n * 1000n;
-  return ts < cutoff;
 }
 
 async function checkDeletedMessages() {
@@ -647,10 +618,6 @@ async function updateTraineeRoleColumn(auditGrants = new Map()) {
   } catch (err) {
     await sendError('PIT', 'Trainee update', err);
   }
-}
-
-function formatAuditDateTime(createdAt) {
-  return moment(createdAt).tz('Asia/Kolkata').format('DD/MM/YYYY hh:mm:ss A');
 }
 
 function extractTraineeAdd(entry) {
