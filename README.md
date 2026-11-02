@@ -299,6 +299,9 @@ If a secret does leak:
 - **Service-account key** → Google Cloud → **IAM & Admin → Service Accounts → Keys**,
   delete the key, create a new one, then update `GOOGLE_CREDENTIALS`.
 
+Found a problem? Read **[SECURITY.md](SECURITY.md)** — please report security
+issues privately, not as a public issue.
+
 Recommended GitHub settings (free for public repositories):
 **Settings → Code security → Secret scanning** and **Push protection**.
 
@@ -331,6 +334,7 @@ Recommended GitHub settings (free for public repositories):
 ├── .github/workflows/bot.yml   # Scheduled run
 ├── .gitignore                  # Blocks .env, file.json, archives
 ├── LICENSE
+├── SECURITY.md                 # How to report a vulnerability
 └── README.md
 ```
 
