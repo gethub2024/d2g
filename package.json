@@ -1,18 +1,38 @@
 {
-  "dependencies": {
-    "discord.js": "^14.15.0",
-    "dotenv": "^16.4.7",
-    "googleapis": "^134.0.0",
-    "moment-timezone": "^0.5.46"
-  },
   "name": "discord-to-google-sheet",
   "version": "2.0.0",
+  "description": "A Discord bot that mirrors channel messages into Google Sheets, syncing edits, deletions and role rosters. Runs on a short daily schedule via GitHub Actions.",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node --no-deprecation index.js"
   },
-  "author": "",
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "google-sheets",
+    "googleapis",
+    "discordjs",
+    "github-actions",
+    "logging"
+  ],
+  "author": "gethub2024",
   "license": "ISC",
-  "description": ""
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gethub2024/d2g.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gethub2024/d2g/issues"
+  },
+  "homepage": "https://github.com/gethub2024/d2g#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "dotenv": "^16.4.7",
+    "googleapis": "^134.0.0",
+    "moment-timezone": "^0.5.46"
+  }
 }

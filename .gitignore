@@ -1,6 +1,19 @@
+# ── Secrets (never commit) ───────────────────────────────────
 .env
+.env.*
+!.env.example
 file.json
+*credentials*.json
+service-account*.json
+
+# ── Build / dependencies ─────────────────────────────────────
 node_modules/
 .npm/
 package.zip
 *.zip
+
+# ── Logs and OS junk ─────────────────────────────────────────
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
